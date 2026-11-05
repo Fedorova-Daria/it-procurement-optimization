@@ -23,3 +23,4 @@ paddleocr>=2.7
 transformers>=4.40
 torch>=2.2                     # нужен для LayoutLM (через transformers)
 Pillow>=10.0
+openpyxl>=3.0                  # работа с Excel-файлами
