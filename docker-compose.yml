@@ -1,10 +1,10 @@
 services:
-
-  # ---------- База данных ----------
+  # PostgreSQL
   db:
     image: postgres:16-alpine
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - .env
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
@@ -12,92 +12,110 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
       interval: 5s
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"   # можно убрать в проде, оставлено для локальной отладки через DBeaver/psql
+      - '5432:5432'
 
-  # ---------- Backend: Django + DRF + Swagger + ML-обработка ----------
+  # Redis
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: ['redis-server', '--appendonly', 'yes']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Django Backend
   backend:
+    image: it-procurement-backend:local
     build:
       context: ./backend
+      dockerfile: Dockerfile
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - .env
     environment:
       DB_HOST: db
       DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DJANGO_SETTINGS_MODULE: config.settings
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - backend_static:/app/staticfiles
       - backend_media:/app/media
-      - model_cache:/root/.cache   # кэш весов Docling/PaddleOCR/LayoutLM (HuggingFace Hub)
-      # На время разработки удобно монтировать код для live-reload:
-      # - ./backend:/app
+      - model_cache:/root/.cache
     expose:
-      - "8000"
-    # ports:
-    #   - "8000:8000"   # раскомментируйте, если нужен прямой доступ к API в обход Nginx
+      - '8000'
 
-  # ---------- Frontend: React (собранный) + Nginx как reverse-proxy ----------
+  # Celery Worker
+  celery-worker:
+    image: it-procurement-backend:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DJANGO_SETTINGS_MODULE: config.settings
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - model_cache:/root/.cache
+      - backend_media:/app/media
+    command: ['celery', '-A', 'config', 'worker', '--loglevel=info']
+
+  # Celery Beat
+  celery-beat:
+    image: it-procurement-backend:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DJANGO_SETTINGS_MODULE: config.settings
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - model_cache:/root/.cache
+    command: ['celery', '-A', 'config', 'beat', '--loglevel=info']
+
+  # React + Nginx
   frontend:
     build:
       context: ./frontend
+      dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
       - backend
     ports:
-      - "80:80"
-
- # ---------- Redis ----------
-  redis-master:
-    image: redis:latest
-    container_name: redis-master
-    ports:
-      - "6380:6379"
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-    volumes:
-      - ./redis.conf:/usr/local/etc/redis/redis.conf
-
- # ---------- Celery Worker ----------
-  celery-worker:
-    build:
-      context: ./backend
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      CELERY_BROKER_URL: redis://redis-master:6379/0
-      CELERY_RESULT_BACKEND: redis://redis-master:6379/0
-      DJANGO_SETTINGS_MODULE: config.settings
-    depends_on:
-      - db
-      - redis-master
-    command: celery -A config worker --loglevel=info
-
-  # ---------- Celery Beat ----------
-  celery-beat:
-    build:
-      context: ./backend
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      CELERY_BROKER_URL: redis://redis-master:6379/0
-      CELERY_RESULT_BACKEND: redis://redis-master:6379/0
-      DJANGO_SETTINGS_MODULE: config.settings
-    depends_on:
-      - db
-      - redis-master
-    command: celery -A config beat --loglevel=info
+      - '80:80'
 
 volumes:
   postgres_data:
+  redis_data:
   backend_static:
   backend_media:
   model_cache:
