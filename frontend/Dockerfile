@@ -1,30 +1,44 @@
+
 # syntax=docker/dockerfile:1
 
-# ---------- Этап 1: сборка React-приложения ----------
+# Этап 1. Сборка React
 FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Сначала только package*.json — чтобы npm install кэшировался,
-# пока не меняются зависимости, а не весь код.
-# npm install (а не npm ci) — потому что package-lock.json ещё не создан;
-# после первой установки он появится в /app, и тогда можно перейти на npm ci для стабильности.
+# Копируем только файлы зависимостей
 COPY package*.json ./
-RUN npm install
 
+# Используем package-lock.json, если он существует
+RUN --mount=type=cache,target=/root/.npm \
+    sh -c 'if [ -f package-lock.json ]; then npm ci; else npm install; fi'
+
+# Копируем исходники
 COPY . .
-RUN npm run build
-# После этого шага статика лежит в /app/build (Create React App) или /app/dist (Vite) —
-# если у вас Vite, замените ниже COPY --from=build /app/build на /app/dist
 
-# ---------- Этап 2: раздача через Nginx ----------
+# Собираем приложение
+RUN npm run build
+
+# Поддерживаем как Create React App (build),
+# так и Vite (dist)
+RUN mkdir -p /static && \
+    if [ -d /app/build ]; then \
+        cp -a /app/build/. /static/; \
+    elif [ -d /app/dist ]; then \
+        cp -a /app/dist/. /static/; \
+    else \
+        echo "ERROR: React build directory not found"; \
+        exit 1; \
+    fi
+
+# Этап 2. Nginx
 FROM nginx:1.27-alpine
 
-# Убираем дефолтный конфиг Nginx и ставим свой
-RUN rm /etc/nginx/conf.d/default.conf
+RUN rm -f /etc/nginx/conf.d/default.conf
+
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-COPY --from=build /app/build /usr/share/nginx/html
+COPY --from=build /static/ /usr/share/nginx/html/
 
 EXPOSE 80
 
