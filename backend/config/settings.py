@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "corsheaders",
     # свои приложения
     "apps.documents",
+    "procurement",
 ]
 
 MIDDLEWARE = [
